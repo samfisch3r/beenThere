@@ -20,10 +20,6 @@ import com.beenthere.android.data.Place
 import com.beenthere.android.ui.PlaceViewModel
 import com.beenthere.android.ui.models.CountryBoundary
 import com.beenthere.android.utils.LocationUtils
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
-import org.json.JSONArray
-import org.json.JSONObject
 import org.osmdroid.events.MapEventsReceiver
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.GeoPoint
@@ -38,10 +34,10 @@ fun MapScreen(viewModel: PlaceViewModel) {
     val context = LocalContext.current
     val places by viewModel.allPlaces.collectAsStateWithLifecycle()
     val searchResults by viewModel.searchResults.collectAsStateWithLifecycle()
+    val countryBoundaries by viewModel.countryBoundaries.collectAsStateWithLifecycle()
     
-    val countryBoundariesState = remember { mutableStateOf<Map<String, CountryBoundary>?>(null) }
     var showAddDialog by remember { mutableStateOf(value = false) }
-    var addDialogData by remember { mutableStateOf<Triple<GeoPoint, String?, String?>?>(null) }
+    var addDialogData by remember { mutableStateOf<Triple<GeoPoint, String?, CountryBoundary?>?>(null) }
     var showDeleteDialog by remember { mutableStateOf(false) }
     var placeToDelete by remember { mutableStateOf<Place?>(null) }
 
@@ -61,42 +57,6 @@ fun MapScreen(viewModel: PlaceViewModel) {
             androidx.core.view.WindowCompat.getInsetsController(it, it.decorView)
                 .hide(androidx.core.view.WindowInsetsCompat.Type.statusBars())
         }
-
-        withContext(Dispatchers.IO) {
-            try {
-                val inputStream = context.assets.open("countries.json")
-                val jsonString = inputStream.bufferedReader().use { it.readText() }
-                val features = JSONObject(jsonString).getJSONArray("features")
-                
-                val boundaryMap = mutableMapOf<String, CountryBoundary>()
-                for (i in 0 until features.length()) {
-                    val feature = features.getJSONObject(i)
-                    val props = feature.getJSONObject("properties")
-                    val name = props.optString("name").takeIf { it.isNotBlank() } ?: 
-                               props.optString("NAME").takeIf { it.isNotBlank() } ?: 
-                               props.optString("admin").takeIf { it.isNotBlank() }
-
-                    if (name != null) {
-                        val geometry = feature.getJSONObject("geometry")
-                        val type = geometry.getString("type")
-                        val coordsJson = geometry.getJSONArray("coordinates")
-                        val polygons = mutableListOf<List<GeoPoint>>()
-
-                        if (type == "Polygon") {
-                            polygons.add(parsePolygon(coordsJson.getJSONArray(0)))
-                        } else if (type == "MultiPolygon") {
-                            for (j in 0 until coordsJson.length()) {
-                                polygons.add(parsePolygon(coordsJson.getJSONArray(j).getJSONArray(0)))
-                            }
-                        }
-                        boundaryMap[name] = CountryBoundary(name, polygons)
-                    }
-                }
-                countryBoundariesState.value = boundaryMap
-            } catch (e: Exception) {
-                e.printStackTrace()
-            }
-        }
     }
 
     Box(modifier = Modifier.fillMaxSize()) {
@@ -113,11 +73,7 @@ fun MapScreen(viewModel: PlaceViewModel) {
                     
                     addEventsOverlay(
                         mapView = this,
-                        onShowDialog = { point, city, country ->
-                            addDialogData = Triple(point, city, country)
-                            showAddDialog = true
-                        },
-                        countryBoundariesState = countryBoundariesState,
+                        onMapClick = { active = false }
                     )
                     mapViewRef = this
                 }
@@ -127,11 +83,12 @@ fun MapScreen(viewModel: PlaceViewModel) {
                     mapView = view, 
                     places = places, 
                     visitedCountries = visitedCountries, 
+                    onMapClick = { active = false },
                     onDeletePlace = { place ->
                         placeToDelete = place
                         showDeleteDialog = true
                     }, 
-                    countryBoundaries = countryBoundariesState.value,
+                    countryBoundaries = countryBoundaries,
                 )
             },
             modifier = Modifier.fillMaxSize()
@@ -176,10 +133,12 @@ fun MapScreen(viewModel: PlaceViewModel) {
                         val point = GeoPoint(feature.geometry.coordinates[1], feature.geometry.coordinates[0])
                         mapViewRef?.controller?.animateTo(point, 12.0, 1000L)
                         
-                        val matchingCountry = LocationUtils.getCountryNameAt(point, countryBoundariesState.value)
-                        val finalCountry = matchingCountry ?: feature.properties.country
+                        val matchingCountry = LocationUtils.getCountryAt(point, countryBoundaries)
+                        val finalCountryBoundary = matchingCountry ?: feature.properties.country?.let { 
+                            CountryBoundary(it, null, emptyList(), null)
+                        }
                         
-                        addDialogData = Triple(point, feature.properties.name, finalCountry?.takeIf { it.isNotBlank() })
+                        addDialogData = Triple(point, feature.properties.name, finalCountryBoundary)
                         showAddDialog = true
                         
                         active = false
@@ -191,16 +150,18 @@ fun MapScreen(viewModel: PlaceViewModel) {
         }
 
         if (showAddDialog && (addDialogData != null)) {
-            val (point, city, country) = addDialogData!!
+            val (point, city, countryBoundary) = addDialogData!!
             AddPlaceDialog(
                 cityName = city,
-                countryName = country,
+                countryName = countryBoundary?.name,
+                countryCode = countryBoundary?.countryCode,
                 onDismiss = { showAddDialog = false },
                 onConfirm = { year ->
+                    val finalCountryName = LocationUtils.normalizeCountryName(countryBoundary?.name)
                     viewModel.insert(
                         Place(
                             cityName = city?.takeIf { it.isNotBlank() } ?: "Unknown",
-                            countryName = country?.takeIf { it.isNotBlank() } ?: "Unknown",
+                            countryName = finalCountryName,
                             year = year,
                             latitude = point.latitude,
                             longitude = point.longitude,
@@ -238,6 +199,7 @@ fun MapScreen(viewModel: PlaceViewModel) {
 private fun AddPlaceDialog(
     cityName: String?,
     countryName: String?,
+    countryCode: String?,
     onDismiss: () -> Unit,
     onConfirm: (Int) -> Unit
 ) {
@@ -250,11 +212,13 @@ private fun AddPlaceDialog(
         title = { Text(text = "Add Visited Place") },
         text = {
             Column {
-                val flag = countryName?.let { LocationUtils.getFlagEmoji(it) } ?: ""
+                val flag = if (countryCode != null) LocationUtils.countryCodeToEmoji(countryCode)
+                          else countryName?.let { LocationUtils.getFlagEmoji(it) } ?: ""
+                val normalizedCountry = countryName?.let { LocationUtils.normalizeCountryName(it) } ?: countryName
                 val locationText = when {
-                    !cityName.isNullOrBlank() && !countryName.isNullOrBlank() -> "$cityName, $countryName $flag"
+                    !cityName.isNullOrBlank() && !normalizedCountry.isNullOrBlank() -> "$cityName, $normalizedCountry $flag"
                     !cityName.isNullOrBlank() -> cityName
-                    !countryName.isNullOrBlank() -> "Selected location in $countryName $flag"
+                    !normalizedCountry.isNullOrBlank() -> "Selected location in $normalizedCountry $flag"
                     else -> "Selected location"
                 }
                 Text(
@@ -285,17 +249,20 @@ private fun AddPlaceDialog(
 
 private fun addEventsOverlay(
     mapView: MapView,
-    onShowDialog: (GeoPoint, String?, String?) -> Unit,
-    countryBoundariesState: MutableState<Map<String, CountryBoundary>?>
+    onMapClick: () -> Unit
 ) {
     val receiver = object : MapEventsReceiver {
-        override fun singleTapConfirmedHelper(p: GeoPoint?): Boolean = false
+        override fun singleTapConfirmedHelper(p: GeoPoint?): Boolean {
+            onMapClick()
+            return false
+        }
         override fun longPressHelper(p: GeoPoint?): Boolean {
-            p?.let { point ->
-                val matchingCountry = LocationUtils.getCountryNameAt(point, countryBoundariesState.value)
-                onShowDialog(point, null, matchingCountry?.takeIf { it.isNotBlank() }) 
+            p?.let {
+                // When long pressing, try to find the country at that point
+                // This will be handled by the update loop or we can trigger a dialog here
             }
-            return true
+            onMapClick()
+            return false
         }
     }
     mapView.overlays.add(MapEventsOverlay(receiver))
@@ -305,6 +272,7 @@ private fun updateMap(
     mapView: MapView,
     places: List<Place>,
     visitedCountries: Set<String>,
+    onMapClick: () -> Unit,
     onDeletePlace: (Place) -> Unit,
     countryBoundaries: Map<String, CountryBoundary>?
 ) {
@@ -321,6 +289,7 @@ private fun updateMap(
         marker.icon = AppCompatResources.getDrawable(mapView.context, R.drawable.ic_pin_marker)
         marker.title = "${place.cityName}, ${place.countryName} (${place.year})"
         marker.setOnMarkerClickListener { _, _ ->
+            onMapClick()
             onDeletePlace(place)
             true
         }
@@ -341,15 +310,6 @@ private fun drawCountryBoundaries(
             addPolygon(mapView, points)
         }
     }
-}
-
-private fun parsePolygon(coordsJson: JSONArray): List<GeoPoint> {
-    val points = mutableListOf<GeoPoint>()
-    for (i in 0 until coordsJson.length()) {
-        val coord = coordsJson.getJSONArray(i)
-        points.add(GeoPoint(coord.getDouble(1), coord.getDouble(0)))
-    }
-    return points
 }
 
 private fun addPolygon(mapView: MapView, points: List<GeoPoint>) {

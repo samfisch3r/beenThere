@@ -5,13 +5,18 @@ import androidx.lifecycle.*
 import com.beenthere.android.data.AppDatabase
 import com.beenthere.android.data.Place
 import com.beenthere.android.data.PlaceRepository
+import com.beenthere.android.ui.models.CountryBoundary
 import com.beenthere.android.ui.models.PhotonFeature
 import com.beenthere.android.ui.models.PhotonResponse
+import com.beenthere.android.utils.LocationUtils
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.*
 import kotlinx.serialization.json.Json
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import org.json.JSONArray
+import org.json.JSONObject
+import org.osmdroid.util.GeoPoint
 import kotlin.time.Duration.Companion.milliseconds
 
 class PlaceViewModel(application: Application) : AndroidViewModel(application) {
@@ -21,6 +26,9 @@ class PlaceViewModel(application: Application) : AndroidViewModel(application) {
 
     private val _searchResults = MutableStateFlow<List<PhotonFeature>>(emptyList())
     val searchResults: StateFlow<List<PhotonFeature>> = _searchResults.asStateFlow()
+
+    private val _countryBoundaries = MutableStateFlow<Map<String, CountryBoundary>?>(null)
+    val countryBoundaries: StateFlow<Map<String, CountryBoundary>?> = _countryBoundaries.asStateFlow()
 
     private val client = OkHttpClient()
     private val json = Json { ignoreUnknownKeys = true }
@@ -35,6 +43,75 @@ class PlaceViewModel(application: Application) : AndroidViewModel(application) {
                 started = SharingStarted.WhileSubscribed(5000),
                 initialValue = emptyList(),
             )
+        
+        loadInitialData()
+    }
+
+    private fun loadInitialData() {
+        viewModelScope.launch(Dispatchers.IO) {
+            LocationUtils.loadCountryData(getApplication())
+            loadCountryBoundaries()
+        }
+    }
+
+    private fun loadCountryBoundaries() {
+        try {
+            val context = getApplication<Application>()
+            val inputStream = context.assets.open("countries.json")
+            val jsonString = inputStream.bufferedReader().use { it.readText() }
+            val features = JSONObject(jsonString).getJSONArray("features")
+            
+            val boundaryMap = mutableMapOf<String, CountryBoundary>()
+            for (i in 0 until features.length()) {
+                val feature = features.getJSONObject(i)
+                val props = feature.getJSONObject("properties")
+                val name = props.optString("name").takeIf { it.isNotBlank() } ?: 
+                           props.optString("NAME").takeIf { it.isNotBlank() } ?: 
+                           props.optString("admin").takeIf { it.isNotBlank() }
+
+                if (name != null) {
+                    LocationUtils.registerCountryProperties(props)
+                    val countryCode = props.optString("ISO_A2").takeIf { it.isNotBlank() && it != "-99" } ?:
+                                     props.optString("iso_a2").takeIf { it.isNotBlank() && it != "-99" }
+                    
+                    val bboxJson = feature.optJSONArray("bbox")
+                    val bbox = if (bboxJson != null && bboxJson.length() == 4) {
+                        org.osmdroid.util.BoundingBox(
+                            bboxJson.getDouble(3), // north
+                            bboxJson.getDouble(2), // east
+                            bboxJson.getDouble(1), // south
+                            bboxJson.getDouble(0)  // west
+                        )
+                    } else null
+
+                    val geometry = feature.getJSONObject("geometry")
+                    val type = geometry.getString("type")
+                    val coordsJson = geometry.getJSONArray("coordinates")
+                    val polygons = mutableListOf<List<GeoPoint>>()
+
+                    if (type == "Polygon") {
+                        polygons.add(parsePolygon(coordsJson.getJSONArray(0)))
+                    } else if (type == "MultiPolygon") {
+                        for (j in 0 until coordsJson.length()) {
+                            polygons.add(parsePolygon(coordsJson.getJSONArray(j).getJSONArray(0)))
+                        }
+                    }
+                    boundaryMap[name] = CountryBoundary(name, countryCode, polygons, bbox)
+                }
+            }
+            _countryBoundaries.value = boundaryMap
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    private fun parsePolygon(coordsJson: JSONArray): List<GeoPoint> {
+        val points = mutableListOf<GeoPoint>()
+        for (i in 0 until coordsJson.length()) {
+            val coord = coordsJson.getJSONArray(i)
+            points.add(GeoPoint(coord.getDouble(1), coord.getDouble(0)))
+        }
+        return points
     }
 
     fun performSearch(query: String) {

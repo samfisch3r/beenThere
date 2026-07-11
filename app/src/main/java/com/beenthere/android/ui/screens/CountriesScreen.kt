@@ -34,7 +34,7 @@ fun CountriesScreen(viewModel: PlaceViewModel) {
     }
 
     val countryStats = remember(places) {
-        places.groupBy { it.countryName }
+        places.groupBy { LocationUtils.normalizeCountryName(it.countryName) }
             .map { (name, cityList) -> CountryStat(name, cityList.size) }
             .sortedBy { it.name }
     }

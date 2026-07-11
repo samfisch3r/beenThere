@@ -16,6 +16,7 @@ import androidx.compose.ui.unit.sp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import com.beenthere.android.data.Place
 import com.beenthere.android.ui.PlaceViewModel
+import com.beenthere.android.utils.LocationUtils
 
 @Composable
 fun CitiesScreen(viewModel: PlaceViewModel) {
@@ -53,9 +54,13 @@ fun CityItem(place: Place) {
         modifier = Modifier
             .fillMaxWidth()
             .padding(12.dp),
-        horizontalArrangement = Arrangement.SpaceBetween,
         verticalAlignment = Alignment.CenterVertically
     ) {
+        Text(
+            text = LocationUtils.getFlagEmoji(place.countryName),
+            fontSize = 24.sp,
+            modifier = Modifier.padding(end = 16.dp)
+        )
         Column(modifier = Modifier.weight(1f)) {
             Text(text = place.cityName, fontSize = 18.sp, fontWeight = FontWeight.Bold)
             Text(text = place.countryName, fontSize = 14.sp, color = Color.Gray)
