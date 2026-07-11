@@ -27,7 +27,8 @@ data class PhotonProperties(
     val city: String? = null,
     val state: String? = null,
     val osm_key: String? = null,
-    val osm_value: String? = null
+    val osm_value: String? = null,
+    val osm_type: String? = null
 )
 
 @Serializable

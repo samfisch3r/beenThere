@@ -34,7 +34,7 @@ object LocationUtils {
      * Registers all name variations for a country from the country_info.json properties.
      */
     fun registerCountryProperties(props: JSONObject) {
-        val code = props.optString("ISO_A2").takeIf { it.isNotBlank() && it != "-99" }
+        val code = resolveIsoCode(props)
         
         if (code != null) {
             val upperCode = code.uppercase()
@@ -51,13 +51,20 @@ object LocationUtils {
             // Add all translations (NAME_AR, NAME_DE, NAME_FR, etc.)
             for (key in props.keys()) {
                 if (key.startsWith("NAME_")) {
-                    names.add(props.optString(key))
+                    val translation = props.optString(key)
+                    if (translation.isNotBlank()) {
+                        names.add(translation)
+                        // Also index the first word for common name matching (e.g. "Kıbrıs" from "Kıbrıs Cumhuriyeti")
+                        if (translation.contains(" ")) {
+                            names.add(translation.split(" ")[0])
+                        }
+                    }
                 }
             }
 
             for (name in names) {
                 if (name.isNotBlank()) {
-                    val lowerName = name.lowercase().trim()
+                    val lowerName = name.lowercase(Locale.US).trim()
                     countryCodeMap[lowerName] = upperCode
                     
                     // Handle abbreviations with dots (e.g., "V.I. (Br.)" -> "vi (br)")
@@ -67,6 +74,30 @@ object LocationUtils {
                     }
                 }
             }
+        }
+    }
+
+    /**
+     * Resolves the ISO code from properties, handling -99 and special territories.
+     */
+    fun resolveIsoCode(props: JSONObject): String? {
+        val rawCode = props.optString("ISO_A2").takeIf { it.isNotBlank() } ?:
+                      props.optString("iso_a2").takeIf { it.isNotBlank() } ?:
+                      props.optString("ISO_A2_EH").takeIf { it.isNotBlank() }
+        
+        if (rawCode != null && rawCode != "-99") return rawCode
+
+        // Use English names for logical grouping of disputed/special territories
+        val name = props.optString("NAME_EN").lowercase(Locale.US)
+        val nameLong = props.optString("NAME_LONG").lowercase(Locale.US)
+
+        return when {
+            name.contains("cyprus") || nameLong.contains("cyprus") -> "CY"
+            name.contains("dhekelia") || name.contains("akrotiri") -> "CY"
+            name.contains("somaliland") -> "SO"
+            name.contains("kosovo") -> "XK"
+            name.contains("taiwan") -> "TW"
+            else -> null
         }
     }
 
@@ -92,11 +123,8 @@ object LocationUtils {
         for (i in 0 until (polygon.size - 1)) {
             val p1 = polygon[i]
             val p2 = polygon[i + 1]
-            val lat1 = p1.latitude
-            val lng1 = p1.longitude
-            val lat2 = p2.latitude
-            val lng2 = p2.longitude
-            if ((lat1 > lat) != (lat2 > lat) && (lng < (lng2 - lng1) * (lat - lat1) / (lat2 - lat1) + lng1)) {
+            if ((p1.latitude > lat) != (p2.latitude > lat) && 
+                (lng < (p2.longitude - p1.longitude) * (lat - p1.latitude) / (p2.latitude - p1.latitude) + p1.longitude)) {
                 intersectCount++
             }
         }
@@ -117,29 +145,34 @@ object LocationUtils {
     }
 
     /**
-     * Converts any country name variation into a standard English name (e.g., "Sverige" -> "Sweden").
+     * Converts any country name variation into a standard name in the current system language.
      */
     fun normalizeCountryName(name: String?): String {
         if (name.isNullOrBlank()) return "Unknown"
         val code = countryNameToCode(name) ?: return name
-        return Locale.Builder().setRegion(code).build().getDisplayCountry(Locale.US)
+        return Locale.Builder().setRegion(code).build().getDisplayCountry(Locale.getDefault())
     }
 
     private fun countryNameToCode(name: String?): String? {
         if (name.isNullOrBlank()) return null
-        val normalized = name.trim().lowercase()
+        val defaultLocale = Locale.getDefault()
+        val normalized = name.trim().lowercase(defaultLocale)
         
         countryCodeMap[normalized]?.let { return it }
         
-        if (normalized.contains(".")) {
-            countryCodeMap[normalized.replace(".", "").trim()]?.let { return it }
-        }
+        // Handle names with dots or the Turkish dotless i explicitly if needed
+        val cleanName = normalized.replace(".", "").replace("ı", "i")
+        countryCodeMap[cleanName]?.let { return it }
 
-        // Java Locale fallback for any name not caught by the JSON mapping
+        // Fallback for common abbreviations not in the JSON
+        if (normalized == "usa" || normalized == "united states") return "US"
+        if (normalized == "uk" || normalized == "united kingdom") return "GB"
+
+        // Java Locale fallback
         return Locale.getISOCountries().find { code ->
             val locale = Locale.Builder().setRegion(code).build()
-            locale.displayCountry.lowercase() == normalized ||
-            locale.getDisplayCountry(Locale.US).lowercase() == normalized
+            locale.getDisplayCountry(defaultLocale).lowercase(defaultLocale) == normalized ||
+            locale.getDisplayCountry(Locale.US).lowercase(Locale.US) == normalized
         }
     }
 }

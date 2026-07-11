@@ -17,6 +17,7 @@ import okhttp3.Request
 import org.json.JSONArray
 import org.json.JSONObject
 import org.osmdroid.util.GeoPoint
+import java.util.Locale
 import kotlin.time.Duration.Companion.milliseconds
 
 class PlaceViewModel(application: Application) : AndroidViewModel(application) {
@@ -71,8 +72,7 @@ class PlaceViewModel(application: Application) : AndroidViewModel(application) {
 
                 if (name != null) {
                     LocationUtils.registerCountryProperties(props)
-                    val countryCode = props.optString("ISO_A2").takeIf { it.isNotBlank() && it != "-99" } ?:
-                                     props.optString("iso_a2").takeIf { it.isNotBlank() && it != "-99" }
+                    val countryCode = LocationUtils.resolveIsoCode(props)
                     
                     val bboxJson = feature.optJSONArray("bbox")
                     val bbox = if (bboxJson != null && bboxJson.length() == 4) {
@@ -114,7 +114,7 @@ class PlaceViewModel(application: Application) : AndroidViewModel(application) {
         return points
     }
 
-    fun performSearch(query: String) {
+    fun performSearch(query: String, lat: Double? = null, lon: Double? = null) {
         val trimmedQuery = query.trim()
         if (trimmedQuery.length < 3) {
             _searchResults.value = emptyList()
@@ -127,7 +127,14 @@ class PlaceViewModel(application: Application) : AndroidViewModel(application) {
             val results = withContext(Dispatchers.IO) {
                 try {
                     val encodedQuery = java.net.URLEncoder.encode(trimmedQuery, "UTF-8")
-                    val url = "https://photon.komoot.io/api/?q=$encodedQuery"
+                    val lang = Locale.getDefault().language
+                    // Use limit 30, bias results if location is provided, filter for places, and request names in system language
+                    var url = "https://photon.komoot.io/api/?q=$encodedQuery&limit=30&lang=$lang" +
+                              "&osm_tag=place&osm_tag=boundary:administrative"
+                    if (lat != null && lon != null) {
+                        url += "&lat=$lat&lon=$lon"
+                    }
+
                     val request = Request.Builder()
                         .url(url)
                         .header("User-Agent", "BeenThere-Android-App")
@@ -142,7 +149,16 @@ class PlaceViewModel(application: Application) : AndroidViewModel(application) {
                     emptyList()
                 }
             }
-            _searchResults.value = results.distinctBy { it.toString() }
+            // Prioritize cities/towns/villages and filter out low-relevance POIs
+            val sortedResults = results.sortedWith(compareByDescending<PhotonFeature> { 
+                it.properties.osm_key == "place" 
+            }.thenByDescending {
+                it.properties.osm_value == "city" || it.properties.osm_value == "town"
+            })
+
+            _searchResults.value = sortedResults.distinctBy {
+                "${it.properties.name}-${it.geometry.coordinates[0]}-${it.geometry.coordinates[1]}"
+            }
         }
     }
 

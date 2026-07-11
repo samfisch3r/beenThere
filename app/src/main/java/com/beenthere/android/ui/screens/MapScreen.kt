@@ -106,7 +106,8 @@ fun MapScreen(viewModel: PlaceViewModel) {
                     query = searchQuery,
                     onQueryChange = { 
                         searchQuery = it
-                        viewModel.performSearch(it)
+                        val center = mapViewRef?.mapCenter
+                        viewModel.performSearch(it, center?.latitude, center?.longitude)
                     },
                     onSearch = { active = false },
                     expanded = active,
@@ -203,9 +204,11 @@ private fun AddPlaceDialog(
     onDismiss: () -> Unit,
     onConfirm: (Int) -> Unit
 ) {
-    var year by remember { 
-        mutableStateOf(java.util.Calendar.getInstance()[java.util.Calendar.YEAR].toString()) 
-    }
+    val currentYear = java.util.Calendar.getInstance()[java.util.Calendar.YEAR]
+    var yearText by remember { mutableStateOf(currentYear.toString()) }
+    
+    val yearInt = yearText.toIntOrNull()
+    val isYearValid = yearInt != null && yearInt in 1900..currentYear
 
     AlertDialog(
         onDismissRequest = onDismiss,
@@ -226,16 +229,33 @@ private fun AddPlaceDialog(
                     modifier = Modifier.padding(bottom = 16.dp)
                 )
                 OutlinedTextField(
-                    value = year,
-                    onValueChange = { if (it.length <= 4 && it.all { char -> char.isDigit() }) year = it },
+                    value = yearText,
+                    onValueChange = { 
+                        if (it.length <= 4 && it.all { char -> char.isDigit() }) {
+                            yearText = it
+                        }
+                    },
                     label = { Text("Year") },
+                    isError = yearText.isNotEmpty() && !isYearValid,
+                    supportingText = {
+                        if (yearText.isNotEmpty() && !isYearValid) {
+                            Text(
+                                text = "Enter a year between 1900 and $currentYear",
+                                color = MaterialTheme.colorScheme.error
+                            )
+                        }
+                    },
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number),
-                    singleLine = true
+                    singleLine = true,
+                    modifier = Modifier.fillMaxWidth()
                 )
             }
         },
         confirmButton = {
-            TextButton(onClick = { onConfirm(year.toIntOrNull() ?: 2024) }) {
+            TextButton(
+                onClick = { yearInt?.let { onConfirm(it) } },
+                enabled = isYearValid
+            ) {
                 Text("Add")
             }
         },
