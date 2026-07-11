@@ -1,0 +1,15 @@
+# Set default behavior to automatically handle line endings.
+* text=auto
+
+# Ensure shell scripts always use LF (so they run on Linux/macOS)
+*.sh text eol=lf
+gradlew text eol=lf
+
+# Explicitly declare binary files to prevent Git from touching them
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.webp binary
+*.jar binary
