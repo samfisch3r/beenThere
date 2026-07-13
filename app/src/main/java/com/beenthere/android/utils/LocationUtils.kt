@@ -89,11 +89,8 @@ object LocationUtils {
 
         // Use English names for logical grouping of disputed/special territories
         val name = props.optString("NAME_EN").lowercase(Locale.US)
-        val nameLong = props.optString("NAME_LONG").lowercase(Locale.US)
 
         return when {
-            name.contains("cyprus") || nameLong.contains("cyprus") -> "CY"
-            name.contains("dhekelia") || name.contains("akrotiri") -> "CY"
             name.contains("somaliland") -> "SO"
             name.contains("kosovo") -> "XK"
             name.contains("taiwan") -> "TW"
@@ -104,16 +101,33 @@ object LocationUtils {
     fun getCountryAt(point: GeoPoint, countryBoundaries: Map<String, CountryBoundary>?): CountryBoundary? {
         if (countryBoundaries == null) return null
         
+        var bestMatch: CountryBoundary? = null
+        var minBboxArea = Double.MAX_VALUE
+
         for (boundary in countryBoundaries.values) {
-            if (boundary.bbox != null && !boundary.bbox.contains(point)) {
+            val bbox = boundary.bbox
+            if (bbox != null && !bbox.contains(point)) {
                 continue
             }
 
             for (polygon in boundary.polygons) {
-                if (isPointInPolygon(point, polygon)) return boundary
+                if (isPointInPolygon(point, polygon)) {
+                    // When multiple countries match (e.g., enclaves like Vatican City in Italy),
+                    // prefer the one with the smallest bounding box area.
+                    val area = if (bbox != null) {
+                        (bbox.latNorth - bbox.latSouth) * (bbox.lonEast - bbox.lonWest)
+                    } else Double.MAX_VALUE
+                    
+                    if (area < minBboxArea) {
+                        minBboxArea = area
+                        bestMatch = boundary
+                    }
+                    // Break polygon loop once matched, but continue checking other countries
+                    break
+                }
             }
         }
-        return null
+        return bestMatch
     }
 
     private fun isPointInPolygon(point: GeoPoint, polygon: List<GeoPoint>): Boolean {
