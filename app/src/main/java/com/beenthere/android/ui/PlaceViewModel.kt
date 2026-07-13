@@ -163,7 +163,7 @@ class PlaceViewModel(application: Application) : AndroidViewModel(application) {
                         .build()
                     client.newCall(request).execute().use { response ->
                         if (!response.isSuccessful) return@withContext emptyList()
-                        val body = response.body?.string() ?: return@withContext emptyList()
+                        val body = response.body.string()
                         val photonResponse = json.decodeFromString<PhotonResponse>(body)
                         photonResponse.features
                     }

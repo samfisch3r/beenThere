@@ -1,6 +1,7 @@
 package com.beenthere.android.utils
 
 import android.content.Context
+import android.icu.text.Transliterator
 import com.beenthere.android.ui.models.CountryBoundary
 import org.json.JSONObject
 import org.osmdroid.util.GeoPoint
@@ -8,6 +9,16 @@ import java.util.Locale
 
 object LocationUtils {
     private val countryCodeMap = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val normalizationCache = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val nameToCodeCache = java.util.concurrent.ConcurrentHashMap<String, String>()
+    private val transliterationCache = java.util.concurrent.ConcurrentHashMap<String, String>()
+    
+    private val transliterator by lazy { Transliterator.getInstance("Any-Latin; Latin-ASCII; Any-Lower") }
+    private val nonAlphaNumeric = Regex("[^a-z0-9\\s]")
+    private const val NULL_CODE = "##"
+
+    private var currentLocale: Locale = Locale.getDefault()
+    private var currentLanguage: String = currentLocale.language
 
     /**
      * Loads essential country metadata (names, codes, bboxes) from the small info file.
@@ -60,23 +71,33 @@ object LocationUtils {
             val upperCode = code.uppercase()
             val names = mutableSetOf<String>()
             
-            // Core name fields - handle both upper and lower case variants found in various GeoJSON sources
-            listOf("NAME", "name", "NAME_LONG", "name_long", "NAME_EN", "name_en", "NAME_CIAWF", "NAME_SORT", "ABBREV", "abbrev", "admin").forEach { key ->
+            // Fast-path for common keys to avoid full key iteration if possible
+            val commonKeys = arrayOf("NAME", "name", "NAME_EN", "name_en", "ISO_A3", "iso_a3", "ABBREV", "abbrev", "ADMIN", "admin")
+            for (key in commonKeys) {
                 val value = props.optString(key)
-                if (value.isNotBlank() && value != "null") {
+                if (value.isNotEmpty() && value != "null") {
                     names.add(value)
+                    val spaceIndex = value.indexOf(' ')
+                    if (spaceIndex != -1) {
+                        names.add(value.substring(0, spaceIndex))
+                    }
                 }
             }
             
-            // Add all translations (NAME_AR, NAME_DE, NAME_FR, etc.)
-            for (key in props.keys()) {
-                if (key.startsWith("NAME_", ignoreCase = true)) {
-                    val translation = props.optString(key)
-                    if (translation.isNotBlank() && translation != "null") {
-                        names.add(translation)
-                        // Also index the first word for common name matching (e.g. "Kıbrıs" from "Kıbrıs Cumhuriyeti")
-                        if (translation.contains(" ")) {
-                            names.add(translation.split(" ")[0])
+            // Only fall back to full iteration if we have very few names (unlikely with the common keys above)
+            if (names.size < 3) {
+                val keys = props.keys()
+                while (keys.hasNext()) {
+                    val key = keys.next()
+                    val value = props.optString(key)
+                    if (value.isNotEmpty() && value != "null") {
+                        val upperKey = key.uppercase(Locale.US)
+                        if (upperKey.contains("NAME") || upperKey.contains("ABBREV") || upperKey == "ADMIN") {
+                            names.add(value)
+                            val spaceIndex = value.indexOf(' ')
+                            if (spaceIndex != -1) {
+                                names.add(value.substring(0, spaceIndex))
+                            }
                         }
                     }
                 }
@@ -84,12 +105,16 @@ object LocationUtils {
 
             for (name in names) {
                 val lowerName = name.lowercase(Locale.US).trim()
-                countryCodeMap[lowerName] = upperCode
-                
-                // Handle abbreviations with dots (e.g., "V.I. (Br.)" -> "vi (br)")
-                if (lowerName.contains(".")) {
-                    val noDots = lowerName.replace(".", "").trim()
-                    countryCodeMap[noDots] = upperCode
+                if (lowerName.isNotEmpty()) {
+                    countryCodeMap[lowerName] = upperCode
+                    
+                    // Only perform expensive normalization if the name contains non-ASCII characters or special symbols
+                    if (lowerName.any { it.code > 127 || !it.isLetterOrDigit() }) {
+                        val flattened = lowerName.normalizeForMatching()
+                        if (flattened != lowerName && flattened.isNotEmpty()) {
+                            countryCodeMap[flattened] = upperCode
+                        }
+                    }
                 }
             }
         }
@@ -106,7 +131,9 @@ object LocationUtils {
         if (rawCode != null && rawCode != "-99") return rawCode
 
         // Use English names for logical grouping of disputed/special territories
-        val name = props.optString("NAME_EN").lowercase(Locale.US)
+        val name = (props.optString("NAME_EN").takeIf { it.isNotBlank() } ?: 
+                    props.optString("NAME").takeIf { it.isNotBlank() } ?: 
+                    props.optString("name")).lowercase(Locale.US)
 
         return when {
             name.contains("somaliland") -> "SO"
@@ -120,41 +147,36 @@ object LocationUtils {
         if (countryBoundaries == null) return null
         
         var bestMatch: CountryBoundary? = null
-        var minBboxArea = Double.MAX_VALUE
-
-        // Use distinct values to avoid redundant checks if map has multiple keys for same boundary
-        val uniqueBoundaries = countryBoundaries.values.distinct()
+        var minArea = Double.MAX_VALUE
         
-        for (boundary in uniqueBoundaries) {
-            val bbox = boundary.bbox
-            if (bbox != null && !bbox.contains(point)) {
-                continue
-            }
-
-            // Optimization: If we have polygons, use them for precision.
-            if (boundary.polygons.isNotEmpty()) {
-                for (polyData in boundary.polygons) {
-                    if (isPointInPolygon(point, polyData.exterior)) {
-                        val inHole = polyData.holes.any { isPointInPolygon(point, it) }
-                        if (!inHole) {
-                            val area = (bbox!!.latNorth - bbox.latSouth) * (bbox.lonEast - bbox.lonWest)
-                            if (area < minBboxArea) {
-                                minBboxArea = area
-                                bestMatch = boundary
-                            }
-                            break
+        // Use a Set to track processed boundaries by identity to avoid redundant expensive checks
+        // (especially important since the map contains multiple keys for the same boundary object)
+        val seen = java.util.Collections.newSetFromMap(java.util.IdentityHashMap<CountryBoundary, Boolean>())
+        
+        for (boundary in countryBoundaries.values) {
+            if (!seen.add(boundary)) continue
+            
+            val bbox = boundary.bbox ?: continue
+            
+            // Fast bounding box check
+            if (bbox.contains(point)) {
+                val area = (bbox.latNorth - bbox.latSouth) * (bbox.lonEast - bbox.lonWest)
+                
+                // Only perform expensive polygon check if this country is smaller than our current best match
+                if (area < minArea) {
+                    val matches = if (boundary.polygons.isEmpty()) {
+                        true // BBox match fallback
+                    } else {
+                        boundary.polygons.any { poly ->
+                            isPointInPolygon(point, poly.exterior) && 
+                            poly.holes.none { isPointInPolygon(point, it) }
                         }
                     }
-                }
-            } else if (bestMatch == null) {
-                // Fallback: If no polygons loaded yet, the BBox match is our best guess
-                val area = if (bbox != null) {
-                    (bbox.latNorth - bbox.latSouth) * (bbox.lonEast - bbox.lonWest)
-                } else Double.MAX_VALUE
-                
-                if (area < minBboxArea) {
-                    minBboxArea = area
-                    bestMatch = boundary
+                    
+                    if (matches) {
+                        bestMatch = boundary
+                        minArea = area
+                    }
                 }
             }
         }
@@ -162,16 +184,40 @@ object LocationUtils {
     }
 
     private fun isPointInPolygon(point: GeoPoint, polygon: List<GeoPoint>): Boolean {
+        val size = polygon.size
+        if (size < 3) return false
+        
         var intersectCount = 0
         val lat = point.latitude
         val lng = point.longitude
-        for (i in 0 until (polygon.size - 1)) {
-            val p1 = polygon[i]
-            val p2 = polygon[i + 1]
-            if ((p1.latitude > lat) != (p2.latitude > lat) && 
-                (lng < (p2.longitude - p1.longitude) * (lat - p1.latitude) / (p2.latitude - p1.latitude) + p1.longitude)) {
-                intersectCount++
+        
+        // Optimize property access and loop to avoid repeated indexing and getter calls
+        val lastPoint = polygon[size - 1]
+        var p1Lat = lastPoint.latitude
+        var p1Lng = lastPoint.longitude
+        
+        for (i in 0 until size) {
+            val p2 = polygon[i]
+            val p2Lat = p2.latitude
+            val p2Lng = p2.longitude
+            
+            if ((p1Lat > lat) != (p2Lat > lat)) {
+                val minLng = if (p1Lng < p2Lng) p1Lng else p2Lng
+                if (lng < minLng) {
+                    intersectCount++
+                } else {
+                    val maxLng = if (p1Lng > p2Lng) p1Lng else p2Lng
+                    if (lng < maxLng) {
+                        // Calculate intersection
+                        val intersectLng = (p2Lng - p1Lng) * (lat - p1Lat) / (p2Lat - p1Lat) + p1Lng
+                        if (lng < intersectLng) {
+                            intersectCount++
+                        }
+                    }
+                }
             }
+            p1Lat = p2Lat
+            p1Lng = p2Lng
         }
         return intersectCount % 2 != 0
     }
@@ -194,27 +240,61 @@ object LocationUtils {
      */
     fun normalizeCountryName(name: String?): String {
         if (name.isNullOrBlank()) return "Unknown"
-        val code = countryNameToCode(name) ?: return name
-        return Locale.Builder().setRegion(code).build().getDisplayCountry(Locale.getDefault())
+        
+        val locale = Locale.getDefault()
+        if (locale != currentLocale) {
+            currentLocale = locale
+            currentLanguage = locale.language
+            normalizationCache.clear()
+        }
+        
+        val cacheKey = "${name}_${currentLanguage}"
+        normalizationCache[cacheKey]?.let { return it }
+        
+        val code = countryNameToCode(name)
+        val result = if (code != null) {
+            Locale.Builder().setRegion(code).build().getDisplayCountry(locale)
+        } else {
+            name
+        }
+        
+        normalizationCache[cacheKey] = result
+        return result
     }
 
     fun countryNameToCode(name: String?): String? {
         if (name.isNullOrBlank()) return null
+        
+        val cached = nameToCodeCache[name]
+        if (cached != null) {
+            return if (cached == NULL_CODE) null else cached
+        }
+        
         val normalized = name.trim().lowercase(Locale.US)
         
-        countryCodeMap[normalized]?.let { return it }
+        var code = countryCodeMap[normalized]
         
-        // Handle names with dots or the Turkish dotless i explicitly if needed
-        val cleanName = normalized.replace(".", "").replace("ı", "i")
-        countryCodeMap[cleanName]?.let { return it }
-
-        // Java Locale fallback
-        val defaultLocale = Locale.getDefault()
-        return Locale.getISOCountries().find { code ->
-            val locale = Locale.Builder().setRegion(code).build()
-            val countryNameDefault = locale.getDisplayCountry(defaultLocale).lowercase(Locale.US)
-            val countryNameUS = locale.getDisplayCountry(Locale.US).lowercase(Locale.US)
-            countryNameDefault == normalized || countryNameUS == normalized
+        if (code == null) {
+            // Fallback to the flattened/normalized version (handles dots, accents, script conversion, etc.)
+            val flattened = normalized.normalizeForMatching()
+            if (flattened != normalized) {
+                code = countryCodeMap[flattened]
+            }
         }
+        
+        nameToCodeCache[name] = code ?: NULL_CODE
+        return code
+    }
+
+    private fun String.normalizeForMatching(): String {
+        if (this.isEmpty()) return this
+        
+        transliterationCache[this]?.let { return it }
+        
+        val flattened = transliterator.transliterate(this)
+        val result = flattened.replace(nonAlphaNumeric, "").trim()
+        
+        transliterationCache[this] = result
+        return result
     }
 }
