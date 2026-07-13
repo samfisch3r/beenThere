@@ -21,6 +21,7 @@ import com.beenthere.android.ui.PlaceViewModel
 import com.beenthere.android.ui.models.CountryBoundary
 import com.beenthere.android.ui.models.PolygonData
 import com.beenthere.android.utils.LocationUtils
+import kotlinx.coroutines.launch
 import org.osmdroid.events.MapEventsReceiver
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
 import org.osmdroid.util.GeoPoint
@@ -44,6 +45,8 @@ fun MapScreen(viewModel: PlaceViewModel) {
 
     var searchQuery by remember { mutableStateOf("") }
     var active by remember { mutableStateOf(false) }
+    
+    val scope = rememberCoroutineScope()
 
     val visitedCountries = remember(places) {
         places.asSequence().map { it.countryName }.toSet()
@@ -74,7 +77,22 @@ fun MapScreen(viewModel: PlaceViewModel) {
                     
                     addEventsOverlay(
                         mapView = this,
-                        onMapClick = { active = false }
+                        onMapClick = { active = false },
+                        onMapLongClick = { point ->
+                            active = false
+                            scope.launch {
+                                val result = viewModel.reverseGeocode(point.latitude, point.longitude)
+                                // Use city if available, otherwise fall back to name (which might be a city/town itself)
+                                val name = result?.properties?.city ?: result?.properties?.name
+                                val matchingCountry = LocationUtils.getCountryAt(point, countryBoundaries)
+                                val finalCountryBoundary = matchingCountry ?: result?.properties?.country?.let {
+                                    CountryBoundary(it, null, emptyList(), null)
+                                }
+                                
+                                addDialogData = Triple(point, name, finalCountryBoundary)
+                                showAddDialog = true
+                            }
+                        }
                     )
                     mapViewRef = this
                 }
@@ -270,7 +288,8 @@ private fun AddPlaceDialog(
 
 private fun addEventsOverlay(
     mapView: MapView,
-    onMapClick: () -> Unit
+    onMapClick: () -> Unit,
+    onMapLongClick: (GeoPoint) -> Unit
 ) {
     val receiver = object : MapEventsReceiver {
         override fun singleTapConfirmedHelper(p: GeoPoint?): Boolean {
@@ -278,12 +297,8 @@ private fun addEventsOverlay(
             return false
         }
         override fun longPressHelper(p: GeoPoint?): Boolean {
-            p?.let {
-                // When long pressing, try to find the country at that point
-                // This will be handled by the update loop or we can trigger a dialog here
-            }
-            onMapClick()
-            return false
+            p?.let { onMapLongClick(it) }
+            return true
         }
     }
     mapView.overlays.add(MapEventsOverlay(receiver))

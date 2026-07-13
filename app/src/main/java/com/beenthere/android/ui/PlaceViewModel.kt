@@ -189,6 +189,33 @@ class PlaceViewModel(application: Application) : AndroidViewModel(application) {
         _searchResults.value = emptyList()
     }
 
+    suspend fun reverseGeocode(lat: Double, lon: Double): PhotonFeature? = withContext(Dispatchers.IO) {
+        try {
+            val lang = Locale.getDefault().language
+            val url = "https://photon.komoot.io/reverse?lat=$lat&lon=$lon&lang=$lang"
+            val request = Request.Builder()
+                .url(url)
+                .header("User-Agent", "BeenThere-Android-App")
+                .build()
+            
+            client.newCall(request).execute().use { response ->
+                if (!response.isSuccessful) return@withContext null
+                val body = response.body.string()
+                val photonResponse = json.decodeFromString<PhotonResponse>(body)
+                
+                // Prioritize features that are actually cities, towns or villages
+                // If not found, fall back to the first result (most specific)
+                photonResponse.features.find { 
+                    it.properties.osm_key == "place" && 
+                    (it.properties.osm_value == "city" || it.properties.osm_value == "town" || it.properties.osm_value == "village")
+                } ?: photonResponse.features.firstOrNull()
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+            null
+        }
+    }
+
     fun insert(place: Place) = viewModelScope.launch {
         repository.insert(place)
     }
