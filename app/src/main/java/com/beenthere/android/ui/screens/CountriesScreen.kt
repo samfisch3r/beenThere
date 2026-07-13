@@ -80,6 +80,7 @@ fun CountryItem(stat: CountryStat) {
             fontWeight = FontWeight.Bold,
             modifier = Modifier.weight(1f)
         )
-        Text(text = "${stat.cityCount} cities", fontSize = 14.sp, color = Color.Gray)
+        val cityLabel = if (stat.cityCount == 1) "city" else "cities"
+        Text(text = "${stat.cityCount} $cityLabel", fontSize = 14.sp, color = Color.Gray)
     }
 }

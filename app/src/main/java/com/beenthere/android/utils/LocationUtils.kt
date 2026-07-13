@@ -10,11 +10,11 @@ object LocationUtils {
     private val countryCodeMap = java.util.concurrent.ConcurrentHashMap<String, String>()
 
     /**
-     * Loads country name-to-code mappings from country_info.json.
+     * Loads essential country metadata (names, codes, bboxes) from the small info file.
+     * This is much faster than parsing full polygons.
      */
-    fun loadCountryData(context: Context) {
-        if (countryCodeMap.isNotEmpty()) return
-        
+    fun loadCountryMetadata(context: Context): Map<String, CountryBoundary> {
+        val metadataMap = mutableMapOf<String, CountryBoundary>()
         try {
             val inputStream = context.assets.open("country_info.json")
             val jsonString = inputStream.bufferedReader().use { it.readText() }
@@ -23,15 +23,35 @@ object LocationUtils {
             for (i in 0 until features.length()) {
                 val feature = features.getJSONObject(i)
                 val props = feature.getJSONObject("properties")
+                
                 registerCountryProperties(props)
+                val name = props.optString("NAME")
+                val code = resolveIsoCode(props)
+                
+                val bboxJson = feature.optJSONArray("bbox")
+                val bbox = if (bboxJson != null && bboxJson.length() == 4) {
+                    org.osmdroid.util.BoundingBox(
+                        bboxJson.getDouble(3), // north
+                        bboxJson.getDouble(2), // east
+                        bboxJson.getDouble(1), // south
+                        bboxJson.getDouble(0)  // west
+                    )
+                } else null
+
+                if (name.isNotBlank()) {
+                    val boundary = CountryBoundary(name, code, emptyList(), bbox)
+                    metadataMap[name] = boundary
+                    if (code != null) metadataMap[code] = boundary
+                }
             }
         } catch (e: Exception) {
             e.printStackTrace()
         }
+        return metadataMap
     }
 
     /**
-     * Registers all name variations for a country from the country_info.json properties.
+     * Registers all name variations for a country from properties.
      */
     fun registerCountryProperties(props: JSONObject) {
         val code = resolveIsoCode(props)
@@ -40,19 +60,19 @@ object LocationUtils {
             val upperCode = code.uppercase()
             val names = mutableSetOf<String>()
             
-            // Core name fields from country_info.json
-            names.add(props.optString("NAME"))
-            names.add(props.optString("NAME_LONG"))
-            names.add(props.optString("NAME_EN"))
-            names.add(props.optString("NAME_CIAWF"))
-            names.add(props.optString("NAME_SORT"))
-            names.add(props.optString("ABBREV"))
+            // Core name fields - handle both upper and lower case variants found in various GeoJSON sources
+            listOf("NAME", "name", "NAME_LONG", "name_long", "NAME_EN", "name_en", "NAME_CIAWF", "NAME_SORT", "ABBREV", "abbrev", "admin").forEach { key ->
+                val value = props.optString(key)
+                if (value.isNotBlank() && value != "null") {
+                    names.add(value)
+                }
+            }
             
             // Add all translations (NAME_AR, NAME_DE, NAME_FR, etc.)
             for (key in props.keys()) {
-                if (key.startsWith("NAME_")) {
+                if (key.startsWith("NAME_", ignoreCase = true)) {
                     val translation = props.optString(key)
-                    if (translation.isNotBlank()) {
+                    if (translation.isNotBlank() && translation != "null") {
                         names.add(translation)
                         // Also index the first word for common name matching (e.g. "Kıbrıs" from "Kıbrıs Cumhuriyeti")
                         if (translation.contains(" ")) {
@@ -63,15 +83,13 @@ object LocationUtils {
             }
 
             for (name in names) {
-                if (name.isNotBlank()) {
-                    val lowerName = name.lowercase(Locale.US).trim()
-                    countryCodeMap[lowerName] = upperCode
-                    
-                    // Handle abbreviations with dots (e.g., "V.I. (Br.)" -> "vi (br)")
-                    if (lowerName.contains(".")) {
-                        val noDots = lowerName.replace(".", "").trim()
-                        countryCodeMap[noDots] = upperCode
-                    }
+                val lowerName = name.lowercase(Locale.US).trim()
+                countryCodeMap[lowerName] = upperCode
+                
+                // Handle abbreviations with dots (e.g., "V.I. (Br.)" -> "vi (br)")
+                if (lowerName.contains(".")) {
+                    val noDots = lowerName.replace(".", "").trim()
+                    countryCodeMap[noDots] = upperCode
                 }
             }
         }
@@ -104,29 +122,39 @@ object LocationUtils {
         var bestMatch: CountryBoundary? = null
         var minBboxArea = Double.MAX_VALUE
 
-        for (boundary in countryBoundaries.values) {
+        // Use distinct values to avoid redundant checks if map has multiple keys for same boundary
+        val uniqueBoundaries = countryBoundaries.values.distinct()
+        
+        for (boundary in uniqueBoundaries) {
             val bbox = boundary.bbox
             if (bbox != null && !bbox.contains(point)) {
                 continue
             }
 
-            for (polyData in boundary.polygons) {
-                if (isPointInPolygon(point, polyData.exterior)) {
-                    val inHole = polyData.holes.any { isPointInPolygon(point, it) }
-                    if (!inHole) {
-                        // When multiple countries match (e.g., enclaves),
-                        // prefer the one with the smallest bounding box area.
-                        val area = if (bbox != null) {
-                            (bbox.latNorth - bbox.latSouth) * (bbox.lonEast - bbox.lonWest)
-                        } else Double.MAX_VALUE
-                        
-                        if (area < minBboxArea) {
-                            minBboxArea = area
-                            bestMatch = boundary
+            // Optimization: If we have polygons, use them for precision.
+            if (boundary.polygons.isNotEmpty()) {
+                for (polyData in boundary.polygons) {
+                    if (isPointInPolygon(point, polyData.exterior)) {
+                        val inHole = polyData.holes.any { isPointInPolygon(point, it) }
+                        if (!inHole) {
+                            val area = (bbox!!.latNorth - bbox.latSouth) * (bbox.lonEast - bbox.lonWest)
+                            if (area < minBboxArea) {
+                                minBboxArea = area
+                                bestMatch = boundary
+                            }
+                            break
                         }
-                        // Break polygon loop once matched, but continue checking other countries
-                        break
                     }
+                }
+            } else if (bestMatch == null) {
+                // Fallback: If no polygons loaded yet, the BBox match is our best guess
+                val area = if (bbox != null) {
+                    (bbox.latNorth - bbox.latSouth) * (bbox.lonEast - bbox.lonWest)
+                } else Double.MAX_VALUE
+                
+                if (area < minBboxArea) {
+                    minBboxArea = area
+                    bestMatch = boundary
                 }
             }
         }
@@ -172,8 +200,7 @@ object LocationUtils {
 
     fun countryNameToCode(name: String?): String? {
         if (name.isNullOrBlank()) return null
-        val defaultLocale = Locale.getDefault()
-        val normalized = name.trim().lowercase(defaultLocale)
+        val normalized = name.trim().lowercase(Locale.US)
         
         countryCodeMap[normalized]?.let { return it }
         
@@ -181,15 +208,13 @@ object LocationUtils {
         val cleanName = normalized.replace(".", "").replace("ı", "i")
         countryCodeMap[cleanName]?.let { return it }
 
-        // Fallback for common abbreviations not in the JSON
-        if (normalized == "usa" || normalized == "united states") return "US"
-        if (normalized == "uk" || normalized == "united kingdom") return "GB"
-
         // Java Locale fallback
+        val defaultLocale = Locale.getDefault()
         return Locale.getISOCountries().find { code ->
             val locale = Locale.Builder().setRegion(code).build()
-            locale.getDisplayCountry(defaultLocale).lowercase(defaultLocale) == normalized ||
-            locale.getDisplayCountry(Locale.US).lowercase(Locale.US) == normalized
+            val countryNameDefault = locale.getDisplayCountry(defaultLocale).lowercase(Locale.US)
+            val countryNameUS = locale.getDisplayCountry(Locale.US).lowercase(Locale.US)
+            countryNameDefault == normalized || countryNameUS == normalized
         }
     }
 }

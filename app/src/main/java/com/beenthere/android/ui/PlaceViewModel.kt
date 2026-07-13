@@ -50,7 +50,11 @@ class PlaceViewModel(application: Application) : AndroidViewModel(application) {
 
     private fun loadInitialData() {
         viewModelScope.launch(Dispatchers.IO) {
-            LocationUtils.loadCountryData(getApplication())
+            // Stage 1: Fast metadata loading from small file
+            val metadata = LocationUtils.loadCountryMetadata(getApplication())
+            _countryBoundaries.value = metadata
+            
+            // Stage 2: Heavy polygon loading from big file in background
             loadCountryBoundaries()
         }
     }
@@ -62,7 +66,9 @@ class PlaceViewModel(application: Application) : AndroidViewModel(application) {
             val jsonString = inputStream.bufferedReader().use { it.readText() }
             val features = JSONObject(jsonString).getJSONArray("features")
             
-            val boundaryMap = mutableMapOf<String, CountryBoundary>()
+            // Update existing boundaries with polygons instead of replacing them
+            val currentMap = _countryBoundaries.value?.toMutableMap() ?: mutableMapOf()
+            
             for (i in 0 until features.length()) {
                 val feature = features.getJSONObject(i)
                 val props = feature.getJSONObject("properties")
@@ -107,13 +113,15 @@ class PlaceViewModel(application: Application) : AndroidViewModel(application) {
                             polygons.add(com.beenthere.android.ui.models.PolygonData(exterior, holes))
                         }
                     }
-                    boundaryMap[name] = CountryBoundary(name, countryCode, polygons, bbox)
+                    
+                    val boundary = CountryBoundary(name, countryCode, polygons, bbox)
+                    currentMap[name] = boundary
                     if (countryCode != null) {
-                        boundaryMap[countryCode] = CountryBoundary(name, countryCode, polygons, bbox)
+                        currentMap[countryCode] = boundary
                     }
                 }
             }
-            _countryBoundaries.value = boundaryMap
+            _countryBoundaries.value = currentMap
         } catch (e: Exception) {
             e.printStackTrace()
         }
