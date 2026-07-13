@@ -19,6 +19,7 @@ import com.beenthere.android.R
 import com.beenthere.android.data.Place
 import com.beenthere.android.ui.PlaceViewModel
 import com.beenthere.android.ui.models.CountryBoundary
+import com.beenthere.android.ui.models.PolygonData
 import com.beenthere.android.utils.LocationUtils
 import org.osmdroid.events.MapEventsReceiver
 import org.osmdroid.tileprovider.tilesource.TileSourceFactory
@@ -307,7 +308,7 @@ private fun updateMap(
         marker.position = GeoPoint(place.latitude, place.longitude)
         marker.setAnchor(Marker.ANCHOR_CENTER, Marker.ANCHOR_BOTTOM)
         marker.icon = AppCompatResources.getDrawable(mapView.context, R.drawable.ic_pin_marker)
-        marker.title = "${place.cityName}, ${place.countryName} (${place.year})"
+        marker.title = "${place.cityName}, ${LocationUtils.normalizeCountryName(place.countryName)} (${place.year})"
         marker.setOnMarkerClickListener { _, _ ->
             onMapClick()
             onDeletePlace(place)
@@ -326,15 +327,20 @@ private fun drawCountryBoundaries(
     if (visitedCountries.isEmpty() || countryBoundaries == null) return
 
     visitedCountries.forEach { countryName ->
-        countryBoundaries[countryName]?.polygons?.forEach { points ->
-            addPolygon(mapView, points)
+        val countryCode = LocationUtils.countryNameToCode(countryName)
+        val boundary = countryBoundaries[countryCode] ?: countryBoundaries[countryName]
+        boundary?.polygons?.forEach { polyData ->
+            addPolygon(mapView, polyData)
         }
     }
 }
 
-private fun addPolygon(mapView: MapView, points: List<GeoPoint>) {
+private fun addPolygon(mapView: MapView, polyData: PolygonData) {
     val polygon = Polygon(mapView)
-    polygon.points = points
+    polygon.points = polyData.exterior
+    if (polyData.holes.isNotEmpty()) {
+        polygon.setHoles(polyData.holes)
+    }
     polygon.fillPaint.color = 0x3300FF00
     polygon.outlinePaint.color = 0xFF006600.toInt()
     polygon.outlinePaint.strokeWidth = 2f

@@ -87,16 +87,30 @@ class PlaceViewModel(application: Application) : AndroidViewModel(application) {
                     val geometry = feature.getJSONObject("geometry")
                     val type = geometry.getString("type")
                     val coordsJson = geometry.getJSONArray("coordinates")
-                    val polygons = mutableListOf<List<GeoPoint>>()
+                    val polygons = mutableListOf<com.beenthere.android.ui.models.PolygonData>()
 
                     if (type == "Polygon") {
-                        polygons.add(parsePolygon(coordsJson.getJSONArray(0)))
+                        val exterior = parsePolygon(coordsJson.getJSONArray(0))
+                        val holes = mutableListOf<List<GeoPoint>>()
+                        for (k in 1 until coordsJson.length()) {
+                            holes.add(parsePolygon(coordsJson.getJSONArray(k)))
+                        }
+                        polygons.add(com.beenthere.android.ui.models.PolygonData(exterior, holes))
                     } else if (type == "MultiPolygon") {
                         for (j in 0 until coordsJson.length()) {
-                            polygons.add(parsePolygon(coordsJson.getJSONArray(j).getJSONArray(0)))
+                            val polyCoords = coordsJson.getJSONArray(j)
+                            val exterior = parsePolygon(polyCoords.getJSONArray(0))
+                            val holes = mutableListOf<List<GeoPoint>>()
+                            for (k in 1 until polyCoords.length()) {
+                                holes.add(parsePolygon(polyCoords.getJSONArray(k)))
+                            }
+                            polygons.add(com.beenthere.android.ui.models.PolygonData(exterior, holes))
                         }
                     }
                     boundaryMap[name] = CountryBoundary(name, countryCode, polygons, bbox)
+                    if (countryCode != null) {
+                        boundaryMap[countryCode] = CountryBoundary(name, countryCode, polygons, bbox)
+                    }
                 }
             }
             _countryBoundaries.value = boundaryMap

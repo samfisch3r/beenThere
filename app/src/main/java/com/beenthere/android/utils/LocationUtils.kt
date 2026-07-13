@@ -110,20 +110,23 @@ object LocationUtils {
                 continue
             }
 
-            for (polygon in boundary.polygons) {
-                if (isPointInPolygon(point, polygon)) {
-                    // When multiple countries match (e.g., enclaves like Vatican City in Italy),
-                    // prefer the one with the smallest bounding box area.
-                    val area = if (bbox != null) {
-                        (bbox.latNorth - bbox.latSouth) * (bbox.lonEast - bbox.lonWest)
-                    } else Double.MAX_VALUE
-                    
-                    if (area < minBboxArea) {
-                        minBboxArea = area
-                        bestMatch = boundary
+            for (polyData in boundary.polygons) {
+                if (isPointInPolygon(point, polyData.exterior)) {
+                    val inHole = polyData.holes.any { isPointInPolygon(point, it) }
+                    if (!inHole) {
+                        // When multiple countries match (e.g., enclaves),
+                        // prefer the one with the smallest bounding box area.
+                        val area = if (bbox != null) {
+                            (bbox.latNorth - bbox.latSouth) * (bbox.lonEast - bbox.lonWest)
+                        } else Double.MAX_VALUE
+                        
+                        if (area < minBboxArea) {
+                            minBboxArea = area
+                            bestMatch = boundary
+                        }
+                        // Break polygon loop once matched, but continue checking other countries
+                        break
                     }
-                    // Break polygon loop once matched, but continue checking other countries
-                    break
                 }
             }
         }
@@ -167,7 +170,7 @@ object LocationUtils {
         return Locale.Builder().setRegion(code).build().getDisplayCountry(Locale.getDefault())
     }
 
-    private fun countryNameToCode(name: String?): String? {
+    fun countryNameToCode(name: String?): String? {
         if (name.isNullOrBlank()) return null
         val defaultLocale = Locale.getDefault()
         val normalized = name.trim().lowercase(defaultLocale)

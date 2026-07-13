@@ -32,12 +32,23 @@ fun CitiesScreen(viewModel: PlaceViewModel) {
     }
 
     Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-        Text(
-            text = "Visited Cities",
-            fontSize = 24.sp,
-            fontWeight = FontWeight.Bold,
-            modifier = Modifier.padding(bottom = 16.dp),
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "Visited Cities",
+                fontSize = 24.sp,
+                fontWeight = FontWeight.Bold,
+            )
+            Text(
+                text = places.size.toString(),
+                fontSize = 24.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color.Gray.copy(alpha = 0.5f)
+            )
+        }
 
         LazyColumn {
             items(places) { place ->
@@ -63,7 +74,11 @@ fun CityItem(place: Place) {
         )
         Column(modifier = Modifier.weight(1f)) {
             Text(text = place.cityName, fontSize = 18.sp, fontWeight = FontWeight.Bold)
-            Text(text = place.countryName, fontSize = 14.sp, color = Color.Gray)
+            Text(
+                text = LocationUtils.normalizeCountryName(place.countryName),
+                fontSize = 14.sp,
+                color = Color.Gray
+            )
         }
         Text(
             text = place.year.toString(),

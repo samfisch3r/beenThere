@@ -40,12 +40,23 @@ fun CountriesScreen(viewModel: PlaceViewModel) {
     }
 
     Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
-        Text(
-            text = "Visited Countries",
-            fontSize = 24.sp,
-            fontWeight = FontWeight.Bold,
-            modifier = Modifier.padding(bottom = 16.dp),
-        )
+        Row(
+            modifier = Modifier.fillMaxWidth().padding(bottom = 16.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Text(
+                text = "Visited Countries",
+                fontSize = 24.sp,
+                fontWeight = FontWeight.Bold,
+            )
+            Text(
+                text = countryStats.size.toString(),
+                fontSize = 24.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color.Gray.copy(alpha = 0.5f)
+            )
+        }
 
         LazyColumn {
             items(countryStats) { stat ->
