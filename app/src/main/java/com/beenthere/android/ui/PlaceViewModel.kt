@@ -114,15 +114,36 @@ class PlaceViewModel(application: Application) : AndroidViewModel(application) {
                         }
                     }
                     
-                    val boundary = CountryBoundary(name, countryCode, polygons, bbox)
+                    // Merge with existing boundary if found by name or code to avoid overwriting large countries with small territories
+                    val existingByName = currentMap[name]
+                    val existingByCode = countryCode?.let { currentMap[it] }
+                    val existing = existingByCode ?: existingByName
+
+                    val mergedPolygons = if (existing != null) {
+                        existing.polygons + polygons
+                    } else {
+                        polygons
+                    }
+
+                    val mergedBbox = if (existing?.bbox != null && bbox != null) {
+                        org.osmdroid.util.BoundingBox(
+                            maxOf(existing.bbox.latNorth, bbox.latNorth),
+                            maxOf(existing.bbox.lonEast, bbox.lonEast),
+                            minOf(existing.bbox.latSouth, bbox.latSouth),
+                            minOf(existing.bbox.lonWest, bbox.lonWest)
+                        )
+                    } else bbox ?: existing?.bbox
+
+                    val finalCode = countryCode ?: existing?.countryCode
+                    val boundary = CountryBoundary(name, finalCode, mergedPolygons, mergedBbox)
                     currentMap[name] = boundary
-                    if (countryCode != null) {
-                        currentMap[countryCode] = boundary
+                    if (finalCode != null) {
+                        currentMap[finalCode] = boundary
                     }
                 }
             }
-            _countryBoundaries.value = currentMap
             LocationUtils.clearCaches()
+            _countryBoundaries.value = currentMap
         } catch (e: Exception) {
             e.printStackTrace()
         }

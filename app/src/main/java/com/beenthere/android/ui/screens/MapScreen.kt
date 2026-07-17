@@ -49,7 +49,10 @@ fun MapScreen(viewModel: PlaceViewModel) {
     val scope = rememberCoroutineScope()
 
     val visitedCountries = remember(places) {
-        places.asSequence().map { it.countryName }.toSet()
+        places.asSequence()
+            .map { it.countryName }
+            .map { LocationUtils.countryNameToCode(it) ?: it }
+            .toSet()
     }
 
     LaunchedEffect(Unit) {
@@ -86,7 +89,7 @@ fun MapScreen(viewModel: PlaceViewModel) {
                                 
                                 val matchingCountry = LocationUtils.getCountryAt(point, countryBoundaries)
                                 val finalCountryBoundary = matchingCountry ?: result?.properties?.country?.let {
-                                    CountryBoundary(it, null, emptyList(), null)
+                                    CountryBoundary(it, result.properties.countrycode, emptyList(), null)
                                 }
                                 
                                 if (!cityName.isNullOrBlank() && finalCountryBoundary != null) {
@@ -157,7 +160,7 @@ fun MapScreen(viewModel: PlaceViewModel) {
                         
                         val matchingCountry = LocationUtils.getCountryAt(point, countryBoundaries)
                         val finalCountryBoundary = matchingCountry ?: feature.properties.country?.let { 
-                            CountryBoundary(it, null, emptyList(), null)
+                            CountryBoundary(it, feature.properties.countrycode, emptyList(), null)
                         }
                         
                         addDialogData = Triple(point, feature.properties.name, finalCountryBoundary)
@@ -179,7 +182,9 @@ fun MapScreen(viewModel: PlaceViewModel) {
                 countryCode = countryBoundary?.countryCode,
                 onDismiss = { showAddDialog = false },
                 onConfirm = { year ->
-                    val finalCountryCode = LocationUtils.countryNameToCode(countryBoundary?.name) ?: "Unknown"
+                    val finalCountryCode = countryBoundary?.countryCode 
+                        ?: LocationUtils.countryNameToCode(countryBoundary?.name) 
+                        ?: "Unknown"
                     viewModel.insert(
                         Place(
                             cityName = city?.takeIf { it.isNotBlank() } ?: "Unknown",
@@ -342,11 +347,18 @@ private fun drawCountryBoundaries(
 ) {
     if (visitedCountries.isEmpty() || countryBoundaries == null) return
 
-    visitedCountries.forEach { countryName ->
-        val countryCode = LocationUtils.countryNameToCode(countryName)
-        val boundary = countryBoundaries[countryCode] ?: countryBoundaries[countryName]
-        boundary?.polygons?.forEach { polyData ->
-            addPolygon(mapView, polyData)
+    // Use IdentityHashMap to ensure we only draw each boundary object once,
+    // even if it's referenced by multiple names/codes in visitedCountries.
+    val seen = java.util.Collections.newSetFromMap(java.util.IdentityHashMap<CountryBoundary, Boolean>())
+
+    visitedCountries.forEach { countryNameOrCode ->
+        val boundary = countryBoundaries[countryNameOrCode] ?: 
+                       LocationUtils.countryNameToCode(countryNameOrCode)?.let { countryBoundaries[it] }
+        
+        if (boundary != null && seen.add(boundary)) {
+            boundary.polygons.forEach { polyData ->
+                addPolygon(mapView, polyData)
+            }
         }
     }
 }

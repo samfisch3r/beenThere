@@ -45,6 +45,7 @@ object LocationUtils {
     fun loadCountryMetadata(context: Context): Map<String, CountryBoundary> {
         nameToCodeCache.clear()
         normalizationCache.clear()
+        countryCodeMap.clear() // Clear this too to avoid stale mappings
         val metadataMap = mutableMapOf<String, CountryBoundary>()
         try {
             val inputStream = context.assets.open("country_info.json")
@@ -161,21 +162,37 @@ object LocationUtils {
             }
         }
         
-        if (rawCode == null) {
-            // Use English names for logical grouping of disputed/special territories
-            val name = (props.optString("NAME_EN").takeIf { it.isNotBlank() } ?: 
-                        props.optString("NAME").takeIf { it.isNotBlank() } ?: 
-                        props.optString("name")).lowercase(Locale.US)
+        val name = (props.optString("NAME_EN").takeIf { it.isNotBlank() } ?: 
+                    props.optString("NAME").takeIf { it.isNotBlank() } ?: 
+                    props.optString("name")).lowercase(Locale.US).trim()
 
-            return when {
-                name.contains("somaliland") -> "SO"
-                name.contains("kosovo") -> "XK"
-                name.contains("taiwan") -> "TW"
-                else -> null
-            }
+        // Name-based overrides handle -99 cases like France, Norway, Kosovo, etc.
+        val nameResolvedCode = when {
+            name.contains("somaliland") -> "SO"
+            name.contains("kosovo") -> "XK"
+            name.contains("taiwan") -> "TW"
+            else -> standardNameToCodeMap[name]
         }
+        
+        if (nameResolvedCode != null) return nameResolvedCode
+        if (rawCode == null) return null
 
         val upperCode = rawCode.uppercase(Locale.US).trim()
+        
+        // Generalized approach: if the code contains a known problematic standard code, use it.
+        // This handles "CN-TW" -> "TW", "RS-XK" -> "XK", etc.
+        if (upperCode.contains("TW")) return "TW"
+        if (upperCode.contains("XK")) return "XK"
+        
+        // If it's a composite code with a hyphen, try to find a 2-letter part
+        if (upperCode.contains("-")) {
+            val parts = upperCode.split("-")
+            // Prefer the part that isn't a broad parent category like CN, US, or FR
+            val candidate = parts.find { it.length == 2 && it !in arrayOf("CN", "US", "FR") }
+                ?: parts.firstOrNull { it.length == 2 }
+            if (candidate != null) return candidate
+        }
+
         return when (upperCode.length) {
             2 -> upperCode
             3 -> iso3To2Map[upperCode] ?: upperCode // Return ISO-3 as fallback
@@ -315,24 +332,34 @@ object LocationUtils {
             return trimmedName.uppercase(Locale.US)
         }
 
-        val cached = nameToCodeCache[name]
+        val cached = nameToCodeCache[trimmedName]
         if (cached != null) {
             return if (cached == NULL_CODE) null else cached
         }
         
-        val normalized = name.trim().lowercase(Locale.US)
+        val normalized = trimmedName.lowercase(Locale.US)
         
         var code = countryCodeMap[normalized] ?: standardNameToCodeMap[normalized]
         
         if (code == null) {
+            // Try to find if any key in countryCodeMap is contained within the name or vice versa
+            // for cases like "Taiwan (Republic of China)" vs "Taiwan"
+            code = countryCodeMap.entries.find { (key, _) -> 
+                normalized.contains(key) || key.contains(normalized)
+            }?.value
+        }
+        
+        if (code == null) {
             // Fallback to the flattened/normalized version (handles dots, accents, script conversion, etc.)
             val flattened = normalized.normalizeForMatching()
-            if (flattened != normalized) {
-                code = countryCodeMap[flattened]
+            if (flattened != normalized && flattened.isNotEmpty()) {
+                code = countryCodeMap[flattened] ?: countryCodeMap.entries.find { (key, _) ->
+                    flattened.contains(key) || key.contains(flattened)
+                }?.value
             }
         }
         
-        nameToCodeCache[name] = code ?: NULL_CODE
+        nameToCodeCache[trimmedName] = code ?: NULL_CODE
         return code
     }
 
