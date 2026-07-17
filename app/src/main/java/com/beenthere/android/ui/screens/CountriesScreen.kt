@@ -24,6 +24,8 @@ data class CountryStat(val name: String, val cityCount: Int)
 fun CountriesScreen(viewModel: PlaceViewModel) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val places by viewModel.allPlaces.collectAsStateWithLifecycle()
+    // Observe country boundaries to trigger recomposition when metadata is loaded
+    val metadata by viewModel.countryBoundaries.collectAsStateWithLifecycle()
     
     androidx.compose.runtime.LaunchedEffect(Unit) {
         val window = (context as? android.app.Activity)?.window
@@ -33,7 +35,7 @@ fun CountriesScreen(viewModel: PlaceViewModel) {
         }
     }
 
-    val countryStats = remember(places) {
+    val countryStats = remember(places, metadata) {
         places.groupBy { LocationUtils.normalizeCountryName(it.countryName) }
             .map { (name, cityList) -> CountryStat(name, cityList.size) }
             .sortedBy { it.name }

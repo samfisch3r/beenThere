@@ -13,18 +13,38 @@ object LocationUtils {
     private val nameToCodeCache = java.util.concurrent.ConcurrentHashMap<String, String>()
     private val transliterationCache = java.util.concurrent.ConcurrentHashMap<String, String>()
     
+    private val iso3To2Map by lazy {
+        Locale.getISOCountries().associateBy { 
+            try { Locale.Builder().setRegion(it).build().isO3Country.uppercase(Locale.US) } catch (_: Exception) { "" }
+        }.filterKeys { it.isNotEmpty() }
+    }
+
+    private val standardNameToCodeMap by lazy {
+        val map = mutableMapOf<String, String>()
+        val locales = arrayOf(Locale.US, Locale.getDefault())
+        for (code in Locale.getISOCountries()) {
+            val upperCode = code.uppercase(Locale.US)
+            for (locale in locales) {
+                try {
+                    val name = Locale.Builder().setRegion(upperCode).build().getDisplayCountry(locale).lowercase(Locale.US)
+                    if (name.isNotEmpty()) map[name] = upperCode
+                } catch (_: Exception) {}
+            }
+        }
+        map
+    }
+
     private val transliterator by lazy { Transliterator.getInstance("Any-Latin; Latin-ASCII; Any-Lower") }
     private val nonAlphaNumeric = Regex("[^a-z0-9\\s]")
     private const val NULL_CODE = "##"
-
-    private var currentLocale: Locale = Locale.getDefault()
-    private var currentLanguage: String = currentLocale.language
 
     /**
      * Loads essential country metadata (names, codes, bboxes) from the small info file.
      * This is much faster than parsing full polygons.
      */
     fun loadCountryMetadata(context: Context): Map<String, CountryBoundary> {
+        nameToCodeCache.clear()
+        normalizationCache.clear()
         val metadataMap = mutableMapOf<String, CountryBoundary>()
         try {
             val inputStream = context.assets.open("country_info.json")
@@ -36,7 +56,9 @@ object LocationUtils {
                 val props = feature.getJSONObject("properties")
                 
                 registerCountryProperties(props)
-                val name = props.optString("NAME")
+                val name = props.optString("NAME").takeIf { it.isNotBlank() } ?: 
+                           props.optString("name").takeIf { it.isNotBlank() } ?: 
+                           props.optString("NAME_EN")
                 val code = resolveIsoCode(props)
                 
                 val bboxJson = feature.optJSONArray("bbox")
@@ -122,23 +144,41 @@ object LocationUtils {
 
     /**
      * Resolves the ISO code from properties, handling -99 and special territories.
+     * Supports both 2-letter and 3-letter codes, converting the latter to 2-letter.
      */
     fun resolveIsoCode(props: JSONObject): String? {
-        val rawCode = props.optString("ISO_A2").takeIf { it.isNotBlank() } ?:
-                      props.optString("iso_a2").takeIf { it.isNotBlank() } ?:
-                      props.optString("ISO_A2_EH").takeIf { it.isNotBlank() }
+        val keys = arrayOf(
+            "ISO_A2", "iso_a2", "ISO_A2_EH", "ISO_A3", "iso_a3", 
+            "ISO_N3", "iso_n3", "ISO", "code", "iso3166_1_alpha_2", "iso3166_1_alpha_3"
+        )
         
-        if (rawCode != null && rawCode != "-99") return rawCode
+        var rawCode: String? = null
+        for (key in keys) {
+            val value = props.optString(key)
+            if (value.isNotBlank() && value != "-99" && value != "null") {
+                rawCode = value
+                break
+            }
+        }
+        
+        if (rawCode == null) {
+            // Use English names for logical grouping of disputed/special territories
+            val name = (props.optString("NAME_EN").takeIf { it.isNotBlank() } ?: 
+                        props.optString("NAME").takeIf { it.isNotBlank() } ?: 
+                        props.optString("name")).lowercase(Locale.US)
 
-        // Use English names for logical grouping of disputed/special territories
-        val name = (props.optString("NAME_EN").takeIf { it.isNotBlank() } ?: 
-                    props.optString("NAME").takeIf { it.isNotBlank() } ?: 
-                    props.optString("name")).lowercase(Locale.US)
+            return when {
+                name.contains("somaliland") -> "SO"
+                name.contains("kosovo") -> "XK"
+                name.contains("taiwan") -> "TW"
+                else -> null
+            }
+        }
 
-        return when {
-            name.contains("somaliland") -> "SO"
-            name.contains("kosovo") -> "XK"
-            name.contains("taiwan") -> "TW"
+        val upperCode = rawCode.uppercase(Locale.US).trim()
+        return when (upperCode.length) {
+            2 -> upperCode
+            3 -> iso3To2Map[upperCode] ?: upperCode // Return ISO-3 as fallback
             else -> null
         }
     }
@@ -222,49 +262,59 @@ object LocationUtils {
         return intersectCount % 2 != 0
     }
 
-    fun getFlagEmoji(countryName: String): String {
-        val countryCode = countryNameToCode(countryName) ?: return "🏳️"
-        return countryCodeToEmoji(countryCode)
-    }
+    /**
+     * Converts a country name or code into its corresponding flag emoji.
+     * Returns a white flag 🏳️ if the country cannot be identified.
+     */
+    fun getFlagEmoji(input: String?): String {
+        val code = countryNameToCode(input) ?: return "🏳️"
+        
+        var cleanCode = code.uppercase(Locale.US).trim()
+        
+        // Handle ISO-3 codes if they somehow made it here
+        if (cleanCode.length == 3) {
+            cleanCode = iso3To2Map[cleanCode] ?: return "🏳️"
+        }
+        
+        if (cleanCode.length != 2 || !cleanCode.all { it in 'A'..'Z' }) return "🏳️"
 
-    fun countryCodeToEmoji(code: String): String {
-        if (code.length != 2) return "🏳️"
-        val upperCode = code.uppercase()
-        val firstLetter = Character.codePointAt(upperCode, 0) - 0x41 + 0x1F1E6
-        val secondLetter = Character.codePointAt(upperCode, 1) - 0x41 + 0x1F1E6
+        val firstLetter = Character.codePointAt(cleanCode, 0) - 0x41 + 0x1F1E6
+        val secondLetter = Character.codePointAt(cleanCode, 1) - 0x41 + 0x1F1E6
         return String(Character.toChars(firstLetter)) + String(Character.toChars(secondLetter))
     }
 
     /**
-     * Converts any country name variation into a standard name in the current system language.
+     * Converts a country name or code into its full display name (e.g., "France").
      */
     fun normalizeCountryName(name: String?): String {
         if (name.isNullOrBlank()) return "Unknown"
         
-        val locale = Locale.getDefault()
-        if (locale != currentLocale) {
-            currentLocale = locale
-            currentLanguage = locale.language
-            normalizationCache.clear()
-        }
+        val code = countryNameToCode(name) ?: return name
         
-        val cacheKey = "${name}_${currentLanguage}"
+        val cacheKey = "display_$code"
         normalizationCache[cacheKey]?.let { return it }
         
-        val code = countryNameToCode(name)
-        val result = if (code != null) {
-            Locale.Builder().setRegion(code).build().getDisplayCountry(locale)
-        } else {
-            name
+        val result = try {
+            Locale.Builder().setRegion(code).build().getDisplayCountry(Locale.getDefault())
+        } catch (_: Exception) {
+            code
         }
         
-        normalizationCache[cacheKey] = result
-        return result
+        if (result.isNotEmpty()) {
+            normalizationCache[cacheKey] = result
+            return result
+        }
+        return code
     }
 
     fun countryNameToCode(name: String?): String? {
         if (name.isNullOrBlank()) return null
         
+        val trimmedName = name.trim()
+        if (trimmedName.length == 2 && trimmedName.all { it.isLetter() }) {
+            return trimmedName.uppercase(Locale.US)
+        }
+
         val cached = nameToCodeCache[name]
         if (cached != null) {
             return if (cached == NULL_CODE) null else cached
@@ -272,7 +322,7 @@ object LocationUtils {
         
         val normalized = name.trim().lowercase(Locale.US)
         
-        var code = countryCodeMap[normalized]
+        var code = countryCodeMap[normalized] ?: standardNameToCodeMap[normalized]
         
         if (code == null) {
             // Fallback to the flattened/normalized version (handles dots, accents, script conversion, etc.)
@@ -296,5 +346,11 @@ object LocationUtils {
         
         transliterationCache[this] = result
         return result
+    }
+
+    fun clearCaches() {
+        nameToCodeCache.clear()
+        normalizationCache.clear()
+        transliterationCache.clear()
     }
 }

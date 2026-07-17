@@ -82,15 +82,17 @@ fun MapScreen(viewModel: PlaceViewModel) {
                             active = false
                             scope.launch {
                                 val result = viewModel.reverseGeocode(point.latitude, point.longitude)
-                                // Use city if available, otherwise fall back to name (which might be a city/town itself)
-                                val name = result?.properties?.city ?: result?.properties?.name
+                                val cityName = result?.properties?.city ?: result?.properties?.name
+                                
                                 val matchingCountry = LocationUtils.getCountryAt(point, countryBoundaries)
                                 val finalCountryBoundary = matchingCountry ?: result?.properties?.country?.let {
                                     CountryBoundary(it, null, emptyList(), null)
                                 }
                                 
-                                addDialogData = Triple(point, name, finalCountryBoundary)
-                                showAddDialog = true
+                                if (!cityName.isNullOrBlank() && finalCountryBoundary != null) {
+                                    addDialogData = Triple(point, cityName, finalCountryBoundary)
+                                    showAddDialog = true
+                                }
                             }
                         }
                     )
@@ -177,11 +179,11 @@ fun MapScreen(viewModel: PlaceViewModel) {
                 countryCode = countryBoundary?.countryCode,
                 onDismiss = { showAddDialog = false },
                 onConfirm = { year ->
-                    val finalCountryName = LocationUtils.normalizeCountryName(countryBoundary?.name)
+                    val finalCountryCode = LocationUtils.countryNameToCode(countryBoundary?.name) ?: "Unknown"
                     viewModel.insert(
                         Place(
                             cityName = city?.takeIf { it.isNotBlank() } ?: "Unknown",
-                            countryName = finalCountryName,
+                            countryName = finalCountryCode,
                             year = year,
                             latitude = point.latitude,
                             longitude = point.longitude,
@@ -234,8 +236,7 @@ private fun AddPlaceDialog(
         title = { Text(text = "Add Visited Place") },
         text = {
             Column {
-                val flag = if (countryCode != null) LocationUtils.countryCodeToEmoji(countryCode)
-                          else countryName?.let { LocationUtils.getFlagEmoji(it) } ?: ""
+                val flag = (countryCode ?: countryName)?.let { LocationUtils.getFlagEmoji(it) } ?: ""
                 val normalizedCountry = countryName?.let { LocationUtils.normalizeCountryName(it) } ?: countryName
                 val locationText = when {
                     !cityName.isNullOrBlank() && !normalizedCountry.isNullOrBlank() -> "$cityName, $normalizedCountry $flag"

@@ -78,7 +78,7 @@ class PlaceViewModel(application: Application) : AndroidViewModel(application) {
 
                 if (name != null) {
                     LocationUtils.registerCountryProperties(props)
-                    val countryCode = LocationUtils.resolveIsoCode(props)
+                    val countryCode = LocationUtils.resolveIsoCode(props) ?: currentMap[name]?.countryCode
                     
                     val bboxJson = feature.optJSONArray("bbox")
                     val bbox = if (bboxJson != null && bboxJson.length() == 4) {
@@ -122,6 +122,7 @@ class PlaceViewModel(application: Application) : AndroidViewModel(application) {
                 }
             }
             _countryBoundaries.value = currentMap
+            LocationUtils.clearCaches()
         } catch (e: Exception) {
             e.printStackTrace()
         }

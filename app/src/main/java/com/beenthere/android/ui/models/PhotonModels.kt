@@ -24,6 +24,7 @@ data class PhotonFeature(
 data class PhotonProperties(
     val name: String,
     val country: String? = null,
+    val countrycode: String? = null,
     val city: String? = null,
     val state: String? = null,
     val osm_key: String? = null,

@@ -22,6 +22,8 @@ import com.beenthere.android.utils.LocationUtils
 fun CitiesScreen(viewModel: PlaceViewModel) {
     val context = androidx.compose.ui.platform.LocalContext.current
     val places by viewModel.allPlaces.collectAsStateWithLifecycle()
+    // Observe country boundaries to trigger recomposition when metadata is loaded
+    val metadata by viewModel.countryBoundaries.collectAsStateWithLifecycle()
 
     androidx.compose.runtime.LaunchedEffect(Unit) {
         val window = (context as? android.app.Activity)?.window
@@ -50,8 +52,8 @@ fun CitiesScreen(viewModel: PlaceViewModel) {
             )
         }
 
-        LazyColumn {
-            items(places) { place ->
+        LazyColumn(modifier = Modifier.weight(1f)) {
+            items(places, key = { "${it.id}_${metadata?.size ?: 0}" }) { place ->
                 CityItem(place)
                 HorizontalDivider(color = Color.LightGray)
             }
