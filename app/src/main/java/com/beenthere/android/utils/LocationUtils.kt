@@ -100,15 +100,11 @@ object LocationUtils {
                 val value = props.optString(key)
                 if (value.isNotEmpty() && value != "null") {
                     names.add(value)
-                    val spaceIndex = value.indexOf(' ')
-                    if (spaceIndex != -1) {
-                        names.add(value.substring(0, spaceIndex))
-                    }
                 }
             }
             
-            // Only fall back to full iteration if we have very few names (unlikely with the common keys above)
-            if (names.size < 3) {
+            // Only fall back to full iteration if we have very few names
+            if (names.size < 2) {
                 val keys = props.keys()
                 while (keys.hasNext()) {
                     val key = keys.next()
@@ -117,10 +113,6 @@ object LocationUtils {
                         val upperKey = key.uppercase(Locale.US)
                         if (upperKey.contains("NAME") || upperKey.contains("ABBREV") || upperKey == "ADMIN") {
                             names.add(value)
-                            val spaceIndex = value.indexOf(' ')
-                            if (spaceIndex != -1) {
-                                names.add(value.substring(0, spaceIndex))
-                            }
                         }
                     }
                 }
@@ -342,20 +334,24 @@ object LocationUtils {
         var code = countryCodeMap[normalized] ?: standardNameToCodeMap[normalized]
         
         if (code == null) {
-            // Try to find if any key in countryCodeMap is contained within the name or vice versa
-            // for cases like "Taiwan (Republic of China)" vs "Taiwan"
-            code = countryCodeMap.entries.find { (key, _) -> 
-                normalized.contains(key) || key.contains(normalized)
-            }?.value
+            // Only attempt partial matching for names long enough to be unique (>= 4 chars)
+            // This prevents "Sudan" or "South Africa" from matching "S." or "South" (SS)
+            if (normalized.length >= 4) {
+                code = countryCodeMap.entries.find { (key, _) -> 
+                    key.length >= 4 && (normalized.contains(key) || key.contains(normalized))
+                }?.value
+            }
         }
         
         if (code == null) {
             // Fallback to the flattened/normalized version (handles dots, accents, script conversion, etc.)
             val flattened = normalized.normalizeForMatching()
             if (flattened != normalized && flattened.isNotEmpty()) {
-                code = countryCodeMap[flattened] ?: countryCodeMap.entries.find { (key, _) ->
-                    flattened.contains(key) || key.contains(flattened)
-                }?.value
+                code = countryCodeMap[flattened] ?: if (flattened.length >= 4) {
+                    countryCodeMap.entries.find { (key, _) ->
+                        key.length >= 4 && (flattened.contains(key) || key.contains(flattened))
+                    }?.value
+                } else null
             }
         }
         
